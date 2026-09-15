@@ -39,24 +39,19 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseAntiforgery();
 
-app.MapGet("/download", async (string fileName, string subPath, FileService fileService) =>
+app.MapGet("/download", (string fileName, string? subPath, FileService fileService) =>
 {
-    subPath ??= "";
-    var physicalPath = fileService.GetPhysicalPath(subPath, fileName);
+    string tempZipPath = fileService.CreateFolderZipStream(subPath ?? "", fileName);
 
-    if (Directory.Exists(physicalPath))
-    {
-        var zipBytes = await fileService.GetFolderZipBytesAsync(subPath, fileName);
-        return Results.File(zipBytes, "application/zip", $"{fileName}.zip");
-    }
+    var fileStream = new FileStream(
+        tempZipPath,
+        FileMode.Open,
+        FileAccess.Read,
+        FileShare.None,
+        4096,
+        FileOptions.DeleteOnClose);
 
-    if (File.Exists(physicalPath))
-    {
-        var fileBytes = await File.ReadAllBytesAsync(physicalPath);
-        return Results.File(fileBytes, "application/octet-stream", fileName);
-    }
-
-    return Results.NotFound("Plik lub folder nie istnieje.");
+    return Results.File(fileStream, "application/zip", $"{fileName}.zip");
 });
 
 app.MapRazorComponents<App>()

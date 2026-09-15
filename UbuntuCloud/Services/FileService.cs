@@ -261,5 +261,20 @@ namespace UbuntuCloud.Services
                 AddDirectoryToZip(archive, subDir.FullName, Path.Combine(entryPrefix, subDir.Name));
             }
         }
+
+        public string CreateFolderZipStream(string subPath, string folderName)
+        {
+            string targetDirPath = string.IsNullOrEmpty(subPath)
+                ? Path.Combine(_baseStoragePath, folderName)
+                : Path.Combine(_baseStoragePath, subPath, folderName);
+
+            // Unikalna ścieżka dla pliku tymczasowego na dysku
+            string tempZipPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.zip");
+
+            // Pakowanie bezpośrednio na dysk (brak limitu RAM-u)
+            ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
+
+            return tempZipPath;
+        }
     }
 }
