@@ -1,7 +1,521 @@
 ﻿@page "/"
+@using UbuntuCloud.Models
+@using UbuntuCloud.Services
+@using System.Threading
+@using System.IO
+@inject FileService FileService
+@inject IJSRuntime JS
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Mój Dysk - Blazor .NET 10</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>📁 Mój Dysk w Chmurze</h2>
+</div>
 
-Welcome to your new app.
+<div class="card p-3 mb-4 shadow-sm">
+    <div class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label fw-bold">Wyślij pojedyncze pliki:</label>
+            <InputFile OnChange="UploadFile" class="form-control" disabled="@isUploading" multiple />
+        </div>
+        <div class="col-md-4">
+            <label class="form-label fw-bold">Wyślij Cały Folder:</label>
+            <InputFile @ref="folderInput" OnChange="UploadFolder" class="form-control" disabled="@isUploading" @attributes="folderUploadAttributes" />
+        </div>
+        <div class="col-md-4">
+            <label class="form-label fw-bold">Utwórz pusty folder:</label>
+            <div class="input-group">
+                <input type="text" class="form-control" placeholder="Nazwa folderu..." @bind="newFolderName" />
+                <button class="btn btn-primary" @onclick="CreateFolder">➕ Utwórz</button>
+            </div>
+        </div>
+    </div>
+
+    @if (isUploading)
+    {
+        <div class="mt-4 p-3 border rounded bg-light">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="fw-bold small text-primary text-truncate me-2" style="max-width: 70%;">@uploadStatusText</span>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="fw-bold small text-primary">@uploadProgressPercent%</span>
+                    <button class="btn btn-sm btn-outline-danger" @onclick="CancelUpload">
+                        ❌ Anuluj
+                    </button>
+                </div>
+            </div>
+            <div class="progress" style="height: 22px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                     role="progressbar"
+                     style="width: @(uploadProgressPercent)%"
+                     aria-valuenow="@uploadProgressPercent"
+                     aria-valuemin="0"
+                     aria-valuemax="100">
+                    @uploadProgressPercent%
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@if (selectedItems.Count > 0)
+{
+    <div class="alert alert-warning d-flex justify-content-between align-items-center mb-3 shadow-sm">
+        <span>Zaznaczono elementów: <strong>@selectedItems.Count</strong></span>
+        <div>
+            <button class="btn btn-sm btn-outline-secondary me-2" @onclick="ClearSelection">Anuluj zaznaczenie</button>
+            <button class="btn btn-sm btn-danger" @onclick="DeleteSelectedItems">🗑️ Usuń zaznaczone (@selectedItems.Count)</button>
+        </div>
+    </div>
+}
+
+@if (isLoading)
+{
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary" role="status"></div>
+        <p class="mt-2">Ładowanie plików...</p>
+    </div>
+}
+else if (items == null || (!items.Any() && string.IsNullOrEmpty(currentSubPath)))
+{
+    <div class="alert alert-info text-center">
+        Ten folder jest pusty. Wgraj plik, cały folder lub utwórz nowy!
+    </div>
+}
+else
+{
+    <div class="table-responsive shadow-sm rounded">
+        <table class="table table-hover align-middle bg-white mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th style="width: 40px;" class="text-center">
+                        <input type="checkbox" class="form-check-input" @onchange="ToggleSelectAll" checked="@isAllSelected" />
+                    </th>
+                    <th>Nazwa</th>
+                    <th>Rozmiar</th>
+                    <th>Ostatnia zmiana</th>
+                    <th class="text-end">Akcje</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (!string.IsNullOrEmpty(currentSubPath))
+                {
+                    <tr @ondragover:preventDefault
+                        @ondrop="HandleDropUp"
+                        class="table-light text-muted fw-bold">
+                        <td class="text-center">---</td>
+                        <td colspan="4">
+                            <a href="javascript:void(0)" @onclick="GoBack" class="text-decoration-none text-dark d-block py-1">
+                                📁 .. <span class="badge bg-secondary ms-2">Przeciągnij tutaj element, aby wyciągnąć go poziom wyżej</span>
+                            </a>
+                        </td>
+                    </tr>
+                }
+
+                @foreach (var item in items)
+                {
+                    bool isSelected = selectedItems.Contains(item.Name);
+                    <tr draggable="true"
+                        @ondragstart="() => HandleDragStart(item)"
+                        @ondragover:preventDefault
+                        @ondrop="() => HandleDrop(item)"
+                        class="@(isSelected ? "table-warning" : (draggedItem == item ? "table-active" : ""))">
+                        <td class="text-center">
+                            <input type="checkbox" class="form-check-input"
+                                   checked="@isSelected"
+                                   @onchange="(e) => ToggleItemSelection(item.Name, e.Value)" />
+                        </td>
+                        <td>
+                            @if (item.IsDirectory)
+                            {
+                                <span class="pe-2">📁</span>
+                                <a href="javascript:void(0)" @onclick="() => NavigateTo(item.Name)" class="fw-bold text-decoration-none">
+                                    @item.Name
+                                </a>
+                            }
+                            else
+                            {
+                                <span class="pe-2">📄</span>
+                                @item.Name
+                            }
+                        </td>
+                        <td>@FormatBytes(item.Size)</td>
+                        <td>@item.LastModified.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td class="text-end">
+                            @if (item.IsDirectory)
+                            {
+                                <button class="btn btn-sm btn-outline-success me-1" @onclick="() => DownloadFolder(item.Name)">
+                                    📦 Pobierz ZIP
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-sm btn-success me-1" @onclick="() => DownloadFile(item.Name)">
+                                    ⬇️ Pobierz
+                                </button>
+                            }
+                            <button class="btn btn-sm btn-danger" @onclick="() => DeleteItem(item.Name)">
+                                🗑️ Usuń
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<FileItem>? items;
+    private string currentSubPath = "";
+    private string newFolderName = "";
+    private bool isLoading = true;
+    private bool isUploading = false;
+    private bool isCancelling = false;
+
+    private string uploadStatusText = "";
+    private int uploadProgressPercent = 0;
+
+    private CancellationTokenSource? uploadCancellationTokenSource;
+    private InputFile? folderInput;
+
+    private FileItem? draggedItem;
+
+    private HashSet<string> selectedItems = new();
+    private bool isAllSelected => items != null && items.Count > 0 && selectedItems.Count == items.Count;
+
+    private Dictionary<string, object> folderUploadAttributes = new()
+    {
+        { "webkitdirectory", "true" },
+        { "directory", "true" }
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshFiles();
+    }
+
+    private async Task RefreshFiles()
+    {
+        isLoading = true;
+        selectedItems.Clear();
+        try
+        {
+            items = await FileService.GetFilesAsync(currentSubPath);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void CancelUpload()
+    {
+        if (uploadCancellationTokenSource != null && !uploadCancellationTokenSource.IsCancellationRequested)
+        {
+            isCancelling = true;
+            uploadStatusText = "Zatrzymywanie transferu i sprzątanie dysku...";
+            uploadCancellationTokenSource.Cancel();
+        }
+    }
+
+    private async Task UploadFile(InputFileChangeEventArgs e)
+    {
+        isUploading = true;
+        isCancelling = false;
+        uploadProgressPercent = 0;
+        uploadCancellationTokenSource = new CancellationTokenSource();
+        var token = uploadCancellationTokenSource.Token;
+
+        var files = e.GetMultipleFiles(maximumFileCount: 1000);
+        var uploadedFilesList = new List<string>();
+
+        try
+        {
+            foreach (var file in files)
+            {
+                token.ThrowIfCancellationRequested();
+
+                uploadStatusText = $"Wysyłanie: {file.Name}";
+                uploadedFilesList.Add(file.Name);
+
+                using var baseStream = file.OpenReadStream(maxAllowedSize: long.MaxValue, cancellationToken: token);
+                using var progressStream = new ProgressStream(baseStream, file.Size, (bytesRead, totalBytes) =>
+                {
+                    if (isCancelling) return;
+
+                    int percent = (int)((double)bytesRead / totalBytes * 100);
+                    if (percent != uploadProgressPercent)
+                    {
+                        uploadProgressPercent = percent;
+                        InvokeAsync(StateHasChanged);
+                    }
+                });
+
+                await FileService.SaveFileAsync(currentSubPath, file.Name, progressStream, token);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException || isCancelling)
+        {
+            uploadStatusText = "Czyszczenie niedokończonych plików...";
+            StateHasChanged();
+
+            await Task.Delay(500);
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+            foreach (var fileName in uploadedFilesList)
+            {
+                await FileService.DeleteItemAsync(currentSubPath, fileName);
+            }
+
+            uploadStatusText = "Przesyłanie zostało anulowane, a pliki usunięte.";
+        }
+        finally
+        {
+            await RefreshFiles();
+            isUploading = false;
+            isCancelling = false;
+            uploadCancellationTokenSource?.Dispose();
+            uploadCancellationTokenSource = null;
+        }
+    }
+
+    private async Task UploadFolder(InputFileChangeEventArgs e)
+    {
+        isUploading = true;
+        isCancelling = false;
+        uploadProgressPercent = 0;
+        uploadCancellationTokenSource = new CancellationTokenSource();
+        var token = uploadCancellationTokenSource.Token;
+
+        var files = e.GetMultipleFiles(maximumFileCount: 10000);
+
+        long totalFolderBytes = files.Sum(f => f.Size);
+        long totalFolderBytesRead = 0;
+
+        int currentFileIndex = 0;
+        int totalFilesCount = files.Count;
+
+        var rootFoldersToClean = new HashSet<string>();
+
+        try
+        {
+            for (int i = 0; i < files.Count; i++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                var file = files[i];
+                currentFileIndex++;
+                uploadStatusText = $"[{currentFileIndex}/{totalFilesCount}] Wysyłanie: {file.Name}";
+
+                string relativePath = "";
+                if (folderInput != null && folderInput.Element.HasValue)
+                {
+                    try
+                    {
+                        relativePath = await JS.InvokeAsync<string>("getRelativePath", folderInput.Element.Value, i);
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(relativePath))
+                {
+                    relativePath = file.Name;
+                }
+
+                relativePath = relativePath.Replace('\\', '/');
+
+                var pathParts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (pathParts.Length > 0)
+                {
+                    rootFoldersToClean.Add(pathParts[0]);
+                }
+
+                long currentFileBytesRead = 0;
+
+                using var baseStream = file.OpenReadStream(maxAllowedSize: long.MaxValue, cancellationToken: token);
+                using var progressStream = new ProgressStream(baseStream, file.Size, (bytesRead, totalBytes) =>
+                {
+                    if (isCancelling) return;
+
+                    long delta = bytesRead - currentFileBytesRead;
+                    currentFileBytesRead = bytesRead;
+                    totalFolderBytesRead += delta;
+
+                    int percent = totalFolderBytes > 0 ? (int)((double)totalFolderBytesRead / totalFolderBytes * 100) : 100;
+                    if (percent != uploadProgressPercent)
+                    {
+                        uploadProgressPercent = percent;
+                        InvokeAsync(StateHasChanged);
+                    }
+                });
+
+                await FileService.SaveFileWithRelativePathAsync(currentSubPath, relativePath, progressStream, token);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException || isCancelling)
+        {
+            uploadStatusText = "Czyszczenie anulowanego folderu z dysku...";
+            StateHasChanged();
+
+            await Task.Delay(500);
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+            foreach (var rootFolder in rootFoldersToClean)
+            {
+                await FileService.DeleteItemAsync(currentSubPath, rootFolder);
+            }
+
+            uploadStatusText = "Folder i jego pliki zostały całkowicie usunięte.";
+        }
+        finally
+        {
+            await RefreshFiles();
+            isUploading = false;
+            isCancelling = false;
+            uploadCancellationTokenSource?.Dispose();
+            uploadCancellationTokenSource = null;
+        }
+    }
+
+    private void ToggleItemSelection(string itemName, object? isChecked)
+    {
+        if ((bool)(isChecked ?? false))
+        {
+            selectedItems.Add(itemName);
+        }
+        else
+        {
+            selectedItems.Remove(itemName);
+        }
+    }
+
+    private void ToggleSelectAll(ChangeEventArgs e)
+    {
+        bool checkedState = (bool)(e.Value ?? false);
+        selectedItems.Clear();
+
+        if (checkedState && items != null)
+        {
+            foreach (var item in items)
+            {
+                selectedItems.Add(item.Name);
+            }
+        }
+    }
+
+    private void ClearSelection()
+    {
+        selectedItems.Clear();
+    }
+
+    private async Task DeleteSelectedItems()
+    {
+        if (!selectedItems.Any()) return;
+
+        bool confirm = await JS.InvokeAsync<bool>("confirm", $"Czy na pewno chcesz usunąć zaznaczone elementy ({selectedItems.Count})?");
+        if (!confirm) return;
+
+        foreach (var itemName in selectedItems.ToList())
+        {
+            await FileService.DeleteItemAsync(currentSubPath, itemName);
+        }
+
+        await RefreshFiles();
+    }
+
+    private async Task CreateFolder()
+    {
+        if (string.IsNullOrWhiteSpace(newFolderName)) return;
+
+        await FileService.CreateDirectoryAsync(currentSubPath, newFolderName.Trim());
+        newFolderName = "";
+        await RefreshFiles();
+    }
+
+    private void HandleDragStart(FileItem item)
+    {
+        draggedItem = item;
+    }
+
+    private async Task HandleDrop(FileItem targetItem)
+    {
+        if (draggedItem == null || !targetItem.IsDirectory || draggedItem == targetItem)
+        {
+            return;
+        }
+
+        await FileService.MoveItemAsync(currentSubPath, draggedItem.Name, targetItem.Name);
+        draggedItem = null;
+        await RefreshFiles();
+    }
+
+    private async Task HandleDropUp()
+    {
+        if (draggedItem != null && !string.IsNullOrEmpty(currentSubPath))
+        {
+            await FileService.MoveItemUpAsync(currentSubPath, draggedItem.Name);
+            draggedItem = null;
+            await RefreshFiles();
+        }
+    }
+
+    private void DownloadFile(string fileName)
+    {
+        var url = $"/download?fileName={Uri.EscapeDataString(fileName)}&subPath={Uri.EscapeDataString(currentSubPath)}";
+        JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private void DownloadFolder(string folderName)
+    {
+        var url = $"/download?fileName={Uri.EscapeDataString(folderName)}&subPath={Uri.EscapeDataString(currentSubPath)}";
+        JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private async Task DeleteItem(string fileName)
+    {
+        await FileService.DeleteItemAsync(currentSubPath, fileName);
+        await RefreshFiles();
+    }
+
+    private async Task NavigateTo(string folderName)
+    {
+        currentSubPath = string.IsNullOrEmpty(currentSubPath) ? folderName : Path.Combine(currentSubPath, folderName);
+        await RefreshFiles();
+    }
+
+    private async Task GoBack()
+    {
+        if (string.IsNullOrEmpty(currentSubPath)) return;
+
+        var lastSlash = currentSubPath.LastIndexOf(Path.DirectorySeparatorChar);
+        if (lastSlash < 0) lastSlash = currentSubPath.LastIndexOf('/');
+
+        if (lastSlash > 0)
+        {
+            currentSubPath = currentSubPath.Substring(0, lastSlash);
+        }
+        else
+        {
+            currentSubPath = "";
+        }
+
+        await RefreshFiles();
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] suffixes = { "B", "KB", "MB", "GB", "TB" };
+        int counter = 0;
+        decimal number = bytes;
+        while (Math.Round(number / 1024) >= 1)
+        {
+            number /= 1024;
+            counter++;
+        }
+        return $"{number:n1} {suffixes[counter]}";
+    }
+}
