@@ -1,12 +1,31 @@
 ﻿using UbuntuCloud.Models;
 using System.IO.Compression;
 using Microsoft.Extensions.Configuration;
+using System.IO;
 
 namespace UbuntuCloud.Services
 {
+    public class DiskSpaceInfo
+    {
+        public long TotalBytes { get; set; }
+        public long FreeBytes { get; set; }
+        public long UsedBytes => TotalBytes - FreeBytes;
+        public double UsedPercentage => TotalBytes > 0 ? (double)UsedBytes / TotalBytes * 100 : 0;
+    }
+
     public class FileService
     {
         private readonly string _baseStoragePath;
+
+        public DiskSpaceInfo GetDiskSpaceInfo()
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(Directory.GetCurrentDirectory()) ?? "/");
+            return new DiskSpaceInfo
+            {
+                TotalBytes = drive.TotalSize,
+                FreeBytes = drive.AvailableFreeSpace
+            };
+        }
 
         public FileService(IConfiguration configuration)
         {
@@ -275,10 +294,8 @@ namespace UbuntuCloud.Services
                 ? Path.Combine(_baseStoragePath, folderName)
                 : Path.Combine(_baseStoragePath, subPath, folderName);
 
-            // Unikalna ścieżka dla pliku tymczasowego na dysku
             string tempZipPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.zip");
 
-            // Pakowanie bezpośrednio na dysk (brak limitu RAM-u)
             ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
 
             return tempZipPath;

@@ -12,6 +12,31 @@
     <h2>📁 Ubuntu Cloud</h2>
 </div>
 
+@if (diskInfo != null)
+{
+    <div class="card p-3 mb-4 shadow-sm bg-white">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="fw-bold text-dark">
+                💾 Miejsce na dysku serwera:
+                <span class="text-primary">@FormatBytes(diskInfo.UsedBytes)</span> z <strong>@FormatBytes(diskInfo.TotalBytes)</strong>
+            </span>
+            <span class="text-muted small">
+                Wolne: <strong>@FormatBytes(diskInfo.FreeBytes)</strong>
+            </span>
+        </div>
+        <div class="progress" style="height: 18px;">
+            <div class="progress-bar @GetProgressBarClass(diskInfo.UsedPercentage)"
+                 role="progressbar"
+                 style="width: @(diskInfo.UsedPercentage.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%"
+                 aria-valuenow="@diskInfo.UsedPercentage"
+                 aria-valuemin="0"
+                 aria-valuemax="100">
+                @diskInfo.UsedPercentage.ToString("F1")%
+            </div>
+        </div>
+    </div>
+}
+
 <div class="card p-3 mb-4 shadow-sm">
     <div class="row g-3 align-items-end">
         <div class="col-md-4">
@@ -166,6 +191,7 @@ else
 
 @code {
     private List<FileItem>? items;
+    private DiskSpaceInfo? diskInfo;
     private string currentSubPath = "";
     private string newFolderName = "";
     private bool isLoading = true;
@@ -201,11 +227,19 @@ else
         try
         {
             items = await FileService.GetFilesAsync(currentSubPath);
+            diskInfo = FileService.GetDiskSpaceInfo();
         }
         finally
         {
             isLoading = false;
         }
+    }
+
+    private string GetProgressBarClass(double percentage)
+    {
+        if (percentage >= 90) return "bg-danger";
+        if (percentage >= 75) return "bg-warning text-dark";
+        return "bg-info text-white";
     }
 
     private void CancelUpload()
@@ -289,7 +323,6 @@ else
         uploadCancellationTokenSource = new CancellationTokenSource();
         var token = uploadCancellationTokenSource.Token;
 
-        // Zwiększamy limit plików (np. do 50 000 dla wielu dużych folderów)
         var files = e.GetMultipleFiles(maximumFileCount: 50000);
 
         long totalFolderBytes = files.Sum(f => f.Size);
@@ -315,7 +348,6 @@ else
                 {
                     try
                     {
-                        // JS wyciąga relatywną ścieżkę pliku uwzględniając podkatalogi
                         relativePath = await JS.InvokeAsync<string>("getRelativePath", folderInput.Element.Value, i);
                     }
                     catch { }
@@ -328,7 +360,6 @@ else
 
                 relativePath = relativePath.Replace('\\', '/');
 
-                // Zapamiętujemy główne foldery na wypadek anulowania (do wyczyszczenia)
                 var pathParts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
                 if (pathParts.Length > 0)
                 {
