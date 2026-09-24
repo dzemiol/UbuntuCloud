@@ -19,8 +19,8 @@
             <InputFile OnChange="UploadFile" class="form-control" disabled="@isUploading" multiple />
         </div>
         <div class="col-md-4">
-            <label class="form-label fw-bold">Wyślij Cały Folder:</label>
-            <InputFile @ref="folderInput" OnChange="UploadFolder" class="form-control" disabled="@isUploading" @attributes="folderUploadAttributes" />
+            <label class="form-label fw-bold">Wyślij Foldery:</label>
+            <InputFile @ref="folderInput" OnChange="UploadFolder" class="form-control" disabled="@isUploading" multiple @attributes="folderUploadAttributes" />
         </div>
         <div class="col-md-4">
             <label class="form-label fw-bold">Utwórz pusty folder:</label>
@@ -289,7 +289,8 @@ else
         uploadCancellationTokenSource = new CancellationTokenSource();
         var token = uploadCancellationTokenSource.Token;
 
-        var files = e.GetMultipleFiles(maximumFileCount: 10000);
+        // Zwiększamy limit plików (np. do 50 000 dla wielu dużych folderów)
+        var files = e.GetMultipleFiles(maximumFileCount: 50000);
 
         long totalFolderBytes = files.Sum(f => f.Size);
         long totalFolderBytesRead = 0;
@@ -314,6 +315,7 @@ else
                 {
                     try
                     {
+                        // JS wyciąga relatywną ścieżkę pliku uwzględniając podkatalogi
                         relativePath = await JS.InvokeAsync<string>("getRelativePath", folderInput.Element.Value, i);
                     }
                     catch { }
@@ -326,6 +328,7 @@ else
 
                 relativePath = relativePath.Replace('\\', '/');
 
+                // Zapamiętujemy główne foldery na wypadek anulowania (do wyczyszczenia)
                 var pathParts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
                 if (pathParts.Length > 0)
                 {
@@ -356,7 +359,7 @@ else
         }
         catch (Exception ex) when (ex is OperationCanceledException || isCancelling)
         {
-            uploadStatusText = "Czyszczenie anulowanego folderu z dysku...";
+            uploadStatusText = "Czyszczenie anulowanych folderów z dysku...";
             StateHasChanged();
 
             await Task.Delay(500);
@@ -369,7 +372,7 @@ else
                 await FileService.DeleteItemAsync(currentSubPath, rootFolder);
             }
 
-            uploadStatusText = "Folder i jego pliki zostały całkowicie usunięte.";
+            uploadStatusText = "Przesyłanie zostało anulowane, a foldery usunięte.";
         }
         finally
         {

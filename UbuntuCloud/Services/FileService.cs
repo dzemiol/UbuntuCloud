@@ -226,6 +226,13 @@ namespace UbuntuCloud.Services
             return Path.Combine(_baseStoragePath, subPath, fileName);
         }
 
+        public string GetFullPath(string subPath, string fileName)
+        {
+            return string.IsNullOrEmpty(subPath)
+                ? Path.Combine(_baseStoragePath, fileName)
+                : Path.Combine(_baseStoragePath, subPath, fileName);
+        }
+
         public async Task<byte[]> GetFolderZipBytesAsync(string subPath, string folderName)
         {
             var folderPath = Path.Combine(_baseStoragePath, subPath, folderName);
