@@ -12,19 +12,33 @@
     <h2>📁 Ubuntu Cloud</h2>
 </div>
 
-@if (diskInfo != null)
-{
-    <div class="card p-3 mb-4 shadow-sm bg-white">
-        <div class="d-flex justify-content-between align-items-center mb-1">
-            <span class="fw-bold text-dark">
-                💾 Miejsce na dysku serwera:
-                <span class="text-primary">@FormatBytes(diskInfo.UsedBytes)</span> z <strong>@FormatBytes(diskInfo.TotalBytes)</strong>
-            </span>
+<div class="card p-3 mb-4 shadow-sm bg-white">
+    <div class="d-flex justify-content-between align-items-center mb-1">
+        <span class="fw-bold text-dark">
+            💾 Miejsce na dysku serwera:
+            @if (diskInfo != null && diskInfo.TotalBytes > 0)
+            {
+                <span class="text-primary">@FormatBytes(diskInfo.UsedBytes)</span>
+                @(" z ")
+                <strong>@FormatBytes(diskInfo.TotalBytes)</strong>
+            }
+            else
+            {
+                <span class="text-warning">Trwa pobieranie informacji o pojemności...</span>
+            }
+        </span>
+
+        @if (diskInfo != null && diskInfo.TotalBytes > 0)
+        {
             <span class="text-muted small">
                 Wolne: <strong>@FormatBytes(diskInfo.FreeBytes)</strong>
             </span>
-        </div>
-        <div class="progress" style="height: 18px;">
+        }
+    </div>
+
+    <div class="progress" style="height: 18px;">
+        @if (diskInfo != null && diskInfo.TotalBytes > 0)
+        {
             <div class="progress-bar @GetProgressBarClass(diskInfo.UsedPercentage)"
                  role="progressbar"
                  style="width: @(diskInfo.UsedPercentage.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%"
@@ -33,9 +47,17 @@
                  aria-valuemax="100">
                 @diskInfo.UsedPercentage.ToString("F1")%
             </div>
-        </div>
+        }
+        else
+        {
+            <div class="progress-bar progress-bar-striped progress-bar-animated bg-secondary"
+                 role="progressbar"
+                 style="width: 100%">
+                Odczytywanie danych...
+            </div>
+        }
     </div>
-}
+</div>
 
 <div class="card p-3 mb-4 shadow-sm">
     <div class="row g-3 align-items-end">

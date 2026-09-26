@@ -2,6 +2,7 @@
 using System.IO.Compression;
 using Microsoft.Extensions.Configuration;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace UbuntuCloud.Services
 {
@@ -17,24 +18,84 @@ namespace UbuntuCloud.Services
     {
         private readonly string _baseStoragePath;
 
-        public DiskSpaceInfo GetDiskSpaceInfo()
+        [StructLayout(LayoutKind.Sequential, Pack = 8)]
+        private struct Statvfs
         {
-            var drive = new DriveInfo(Path.GetPathRoot(Directory.GetCurrentDirectory()) ?? "/");
-            return new DiskSpaceInfo
-            {
-                TotalBytes = drive.TotalSize,
-                FreeBytes = drive.AvailableFreeSpace
-            };
+            public ulong f_bsize;
+            public ulong f_frsize;
+            public ulong f_blocks;
+            public ulong f_bfree;
+            public ulong f_bavail;
+            public ulong f_files;
+            public ulong f_ffree;
+            public ulong f_favail;
+            public ulong f_fsid;
+            public ulong f_flag;
+            public ulong f_namemax;
         }
+
+        [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int statvfs(string path, out Statvfs buf);
 
         public FileService(IConfiguration configuration)
         {
-            _baseStoragePath = configuration["StoragePath"] ?? Path.Combine(Directory.GetCurrentDirectory(), "Storage");
+            _baseStoragePath = configuration["StoragePath"] ?? "/mnt/dysk500gb/UbuntuCloud";
 
             if (!Directory.Exists(_baseStoragePath))
             {
                 Directory.CreateDirectory(_baseStoragePath);
             }
+        }
+
+        public DiskSpaceInfo GetDiskSpaceInfo()
+        {
+            try
+            {
+                string targetPath = "/var/ubuntucloud/storage";
+
+                if (!Directory.Exists(targetPath))
+                {
+                    Directory.CreateDirectory(targetPath);
+                }
+
+                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Linux))
+                {
+                    var process = new System.Diagnostics.Process
+                    {
+                        StartInfo = new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = "df",
+                            Arguments = $"-B1 \"{targetPath}\"",
+                            RedirectStandardOutput = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        }
+                    };
+
+                    process.Start();
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+
+                    var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    if (lines.Length >= 2)
+                    {
+                        var parts = lines[1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 4 &&
+                            long.TryParse(parts[1], out long total) &&
+                            long.TryParse(parts[3], out long free))
+                        {
+                            return new DiskSpaceInfo
+                            {
+                                TotalBytes = total,
+                                FreeBytes = free
+                            };
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return new DiskSpaceInfo { TotalBytes = 0, FreeBytes = 0 };
         }
 
         public Task<List<FileItem>> GetFilesAsync(string subPath)
