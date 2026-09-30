@@ -1,8 +1,13 @@
-﻿using UbuntuCloud.Models;
-using System.IO.Compression;
-using Microsoft.Extensions.Configuration;
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+using UbuntuCloud.Models;
 
 namespace UbuntuCloud.Services
 {
@@ -47,65 +52,62 @@ namespace UbuntuCloud.Services
             }
         }
 
+        private string GetValidFullPath(string subPath, string? fileName = null)
+        {
+            string combined = string.IsNullOrEmpty(fileName)
+                ? Path.Combine(_baseStoragePath, subPath ?? "")
+                : Path.Combine(_baseStoragePath, subPath ?? "", fileName);
+
+            string fullPath = Path.GetFullPath(combined);
+            string baseFullPath = Path.GetFullPath(_baseStoragePath);
+
+            if (!fullPath.StartsWith(baseFullPath, StringComparison.Ordinal))
+            {
+                throw new UnauthorizedAccessException("Dostęp zabroniony: Próba wyjścia poza katalog bazowy.");
+            }
+
+            return fullPath;
+        }
+
         public DiskSpaceInfo GetDiskSpaceInfo()
         {
             try
             {
-                string targetPath = "/var/ubuntucloud/storage";
-
-                if (!Directory.Exists(targetPath))
+                var drive = new DriveInfo(_baseStoragePath);
+                if (drive.IsReady)
                 {
-                    Directory.CreateDirectory(targetPath);
-                }
-
-                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Linux))
-                {
-                    var process = new System.Diagnostics.Process
+                    return new DiskSpaceInfo
                     {
-                        StartInfo = new System.Diagnostics.ProcessStartInfo
-                        {
-                            FileName = "df",
-                            Arguments = $"-B1 \"{targetPath}\"",
-                            RedirectStandardOutput = true,
-                            UseShellExecute = false,
-                            CreateNoWindow = true
-                        }
+                        TotalBytes = drive.TotalSize,
+                        FreeBytes = drive.AvailableFreeSpace
                     };
-
-                    process.Start();
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-
-                    var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                    if (lines.Length >= 2)
+                }
+            }
+            catch
+            {
+                // Fallback dla specyficznych podmontowanych zasobów Linuksa
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    if (statvfs(_baseStoragePath, out var stat) == 0)
                     {
-                        var parts = lines[1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 4 &&
-                            long.TryParse(parts[1], out long total) &&
-                            long.TryParse(parts[3], out long free))
+                        ulong total = stat.f_blocks * stat.f_frsize;
+                        ulong free = stat.f_bavail * stat.f_frsize;
+
+                        return new DiskSpaceInfo
                         {
-                            return new DiskSpaceInfo
-                            {
-                                TotalBytes = total,
-                                FreeBytes = free
-                            };
-                        }
+                            TotalBytes = (long)total,
+                            FreeBytes = (long)free
+                        };
                     }
                 }
             }
-            catch { }
 
             return new DiskSpaceInfo { TotalBytes = 0, FreeBytes = 0 };
         }
 
         public Task<List<FileItem>> GetFilesAsync(string subPath)
         {
-            var targetPath = Path.Combine(_baseStoragePath, subPath);
-
-            if (!Path.GetFullPath(targetPath).StartsWith(Path.GetFullPath(_baseStoragePath)))
-            {
-                throw new UnauthorizedAccessException("Dostęp zabroniony.");
-            }
+            string targetPath = GetValidFullPath(subPath);
 
             if (!Directory.Exists(targetPath))
             {
@@ -143,7 +145,6 @@ namespace UbuntuCloud.Services
         private long GetDirectorySize(DirectoryInfo dirInfo)
         {
             long size = 0;
-
             try
             {
                 foreach (var file in dirInfo.GetFiles())
@@ -156,22 +157,21 @@ namespace UbuntuCloud.Services
                     size += GetDirectorySize(subDir);
                 }
             }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            catch (UnauthorizedAccessException) { }
+            catch (DirectoryNotFoundException) { }
 
             return size;
         }
 
         public async Task SaveFileAsync(string subPath, string fileName, Stream stream, CancellationToken cancellationToken = default)
         {
-            var targetDirectory = Path.Combine(_baseStoragePath, subPath);
+            string targetDirectory = GetValidFullPath(subPath);
             if (!Directory.Exists(targetDirectory))
             {
                 Directory.CreateDirectory(targetDirectory);
             }
 
-            var filePath = Path.Combine(targetDirectory, fileName);
+            string filePath = GetValidFullPath(subPath, fileName);
 
             try
             {
@@ -192,9 +192,9 @@ namespace UbuntuCloud.Services
 
         public async Task SaveFileWithRelativePathAsync(string currentSubPath, string relativePath, Stream stream, CancellationToken cancellationToken = default)
         {
-            var fullPath = Path.Combine(_baseStoragePath, currentSubPath, relativePath);
+            string fullPath = GetValidFullPath(currentSubPath, relativePath);
 
-            var directory = Path.GetDirectoryName(fullPath);
+            string? directory = Path.GetDirectoryName(fullPath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
             {
                 Directory.CreateDirectory(directory);
@@ -219,7 +219,7 @@ namespace UbuntuCloud.Services
 
         public Task CreateDirectoryAsync(string subPath, string folderName)
         {
-            var targetPath = Path.Combine(_baseStoragePath, subPath, folderName);
+            string targetPath = GetValidFullPath(subPath, folderName);
             if (!Directory.Exists(targetPath))
             {
                 Directory.CreateDirectory(targetPath);
@@ -229,16 +229,17 @@ namespace UbuntuCloud.Services
 
         public Task MoveItemAsync(string sourceSubPath, string itemName, string targetDirectoryName)
         {
-            var sourcePath = Path.Combine(_baseStoragePath, sourceSubPath, itemName);
-            var targetDirectoryPath = Path.Combine(_baseStoragePath, sourceSubPath, targetDirectoryName, itemName);
+            string sourcePath = GetValidFullPath(sourceSubPath, itemName);
+            string targetSubPath = Path.Combine(sourceSubPath ?? "", targetDirectoryName);
+            string targetPath = GetValidFullPath(targetSubPath, itemName);
 
             if (File.Exists(sourcePath))
             {
-                File.Move(sourcePath, targetDirectoryPath);
+                File.Move(sourcePath, targetPath);
             }
             else if (Directory.Exists(sourcePath))
             {
-                Directory.Move(sourcePath, targetDirectoryPath);
+                Directory.Move(sourcePath, targetPath);
             }
 
             return Task.CompletedTask;
@@ -251,9 +252,9 @@ namespace UbuntuCloud.Services
                 return Task.CompletedTask;
             }
 
-            var sourcePath = Path.Combine(_baseStoragePath, currentSubPath, itemName);
-            var parentSubPath = Path.GetDirectoryName(currentSubPath) ?? "";
-            var targetPath = Path.Combine(_baseStoragePath, parentSubPath, itemName);
+            string sourcePath = GetValidFullPath(currentSubPath, itemName);
+            string parentSubPath = Path.GetDirectoryName(currentSubPath) ?? "";
+            string targetPath = GetValidFullPath(parentSubPath, itemName);
 
             if (File.Exists(sourcePath))
             {
@@ -269,7 +270,7 @@ namespace UbuntuCloud.Services
 
         public async Task DeleteItemAsync(string subPath, string itemName)
         {
-            var targetPath = Path.Combine(_baseStoragePath, subPath, itemName);
+            string targetPath = GetValidFullPath(subPath, itemName);
 
             for (int i = 0; i < 5; i++)
             {
@@ -303,63 +304,86 @@ namespace UbuntuCloud.Services
 
         public string GetPhysicalPath(string subPath, string fileName)
         {
-            return Path.Combine(_baseStoragePath, subPath, fileName);
+            return GetValidFullPath(subPath, fileName);
         }
 
         public string GetFullPath(string subPath, string fileName)
         {
-            return string.IsNullOrEmpty(subPath)
-                ? Path.Combine(_baseStoragePath, fileName)
-                : Path.Combine(_baseStoragePath, subPath, fileName);
+            return GetValidFullPath(subPath, fileName);
         }
 
-        public async Task<byte[]> GetFolderZipBytesAsync(string subPath, string folderName)
+        public string CreateFolderZipStream(String subPath, string folderName)
         {
-            var folderPath = Path.Combine(_baseStoragePath, subPath, folderName);
+            string targetDirPath = GetValidFullPath(subPath, folderName);
 
-            if (!Directory.Exists(folderPath))
+            if (!Directory.Exists(targetDirPath))
             {
-                throw new DirectoryNotFoundException("Folder nie istnieje.");
+                throw new DirectoryNotFoundException($"Katalog '{folderName}' nie istnieje.");
             }
 
-            using (var memoryStream = new MemoryStream())
+            string tempDir = Path.Combine(_baseStoragePath, ".temp");
+            Directory.CreateDirectory(tempDir);
+
+            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable())
             {
-                using (var archive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
+                try
                 {
-                    AddDirectoryToZip(archive, folderPath, folderName);
+                    var processInfo = new ProcessStartInfo
+                    {
+                        FileName = "bash",
+                        Arguments = $"-c \"cd \\\"{targetDirPath}\\\" && zip -r -1 - . | pigz -p {Environment.ProcessorCount} > \\\"{tempZipPath}\\\"\"",
+                        RedirectStandardOutput = false,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using (var process = Process.Start(processInfo))
+                    {
+                        process?.WaitForExit();
+                        if (process?.ExitCode == 0 && File.Exists(tempZipPath) && new FileInfo(tempZipPath).Length > 0)
+                        {
+                            return tempZipPath;
+                        }
+                    }
                 }
-
-                return memoryStream.ToArray();
+                catch
+                {
+                }
             }
-        }
 
-        private void AddDirectoryToZip(ZipArchive archive, string sourceDir, string entryPrefix)
-        {
-            var dirInfo = new DirectoryInfo(sourceDir);
-
-            foreach (var file in dirInfo.GetFiles())
+            if (File.Exists(tempZipPath))
             {
-                var entryName = Path.Combine(entryPrefix, file.Name).Replace('\\', '/');
-                archive.CreateEntryFromFile(file.FullName, entryName, CompressionLevel.Fastest);
+                try { File.Delete(tempZipPath); } catch { }
             }
-
-            foreach (var subDir in dirInfo.GetDirectories())
-            {
-                AddDirectoryToZip(archive, subDir.FullName, Path.Combine(entryPrefix, subDir.Name));
-            }
-        }
-
-        public string CreateFolderZipStream(string subPath, string folderName)
-        {
-            string targetDirPath = string.IsNullOrEmpty(subPath)
-                ? Path.Combine(_baseStoragePath, folderName)
-                : Path.Combine(_baseStoragePath, subPath, folderName);
-
-            string tempZipPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.zip");
 
             ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
 
             return tempZipPath;
+        }
+
+        private bool IsPigzAvailable()
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "which",
+                    Arguments = "pigz",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                process?.WaitForExit();
+                return process?.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }
