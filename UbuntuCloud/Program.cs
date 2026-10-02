@@ -25,6 +25,8 @@ builder.Services.Configure<FormOptions>(options =>
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
     serverOptions.Limits.MaxRequestBodySize = null;
+
+    serverOptions.Limits.MinResponseDataRate = null;
 });
 
 var app = builder.Build();
@@ -47,23 +49,34 @@ app.MapGet("/download", (string fileName, string? subPath, FileService fileServi
 
     if (File.Exists(fullPath))
     {
-        var fileStream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return Results.File(fileStream, "application/octet-stream", fileName);
+        var fileStream = new FileStream(
+            fullPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1048576,
+            FileOptions.Asynchronous);
+
+        return Results.File(fileStream, "application/octet-stream", fileName, enableRangeProcessing: true);
     }
 
     if (Directory.Exists(fullPath))
     {
-        string tempZipPath = fileService.CreateFolderZipStream(subPath, fileName);
+        string tempArchivePath = fileService.CreateFolderZipStream(subPath, fileName);
 
-        var zipStream = new FileStream(
-            tempZipPath,
+        bool isTarGz = tempArchivePath.EndsWith(".tar.gz");
+        string contentType = isTarGz ? "application/gzip" : "application/zip";
+        string downloadFileName = isTarGz ? $"{fileName}.tar.gz" : $"{fileName}.zip";
+
+        var archiveStream = new FileStream(
+            tempArchivePath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.None,
-            4096,
-            FileOptions.DeleteOnClose);
+            FileShare.Read,
+            bufferSize: 1048576,
+            FileOptions.DeleteOnClose | FileOptions.Asynchronous);
 
-        return Results.File(zipStream, "application/zip", $"{fileName}.zip");
+        return Results.File(archiveStream, contentType, downloadFileName, enableRangeProcessing: true);
     }
 
     return Results.NotFound("Plik lub folder nie istnieje.");

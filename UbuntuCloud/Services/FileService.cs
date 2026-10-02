@@ -312,7 +312,7 @@ namespace UbuntuCloud.Services
             return GetValidFullPath(subPath, fileName);
         }
 
-        public string CreateFolderZipStream(String subPath, string folderName)
+        public string CreateFolderZipStream(string subPath, string folderName)
         {
             string targetDirPath = GetValidFullPath(subPath, folderName);
 
@@ -324,7 +324,7 @@ namespace UbuntuCloud.Services
             string tempDir = Path.Combine(_baseStoragePath, ".temp");
             Directory.CreateDirectory(tempDir);
 
-            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
+            string tempArchivePath = Path.Combine(tempDir, $"{Guid.NewGuid()}.tar.gz");
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable())
             {
@@ -333,7 +333,7 @@ namespace UbuntuCloud.Services
                     var processInfo = new ProcessStartInfo
                     {
                         FileName = "bash",
-                        Arguments = $"-c \"cd \\\"{targetDirPath}\\\" && zip -r -1 - . | pigz -p {Environment.ProcessorCount} > \\\"{tempZipPath}\\\"\"",
+                        Arguments = $"-c \"tar -cf - -C \\\"{targetDirPath}\\\" . | pigz -p {Environment.ProcessorCount} -1 > \\\"{tempArchivePath}\\\"\"",
                         RedirectStandardOutput = false,
                         RedirectStandardError = true,
                         UseShellExecute = false,
@@ -343,9 +343,9 @@ namespace UbuntuCloud.Services
                     using (var process = Process.Start(processInfo))
                     {
                         process?.WaitForExit();
-                        if (process?.ExitCode == 0 && File.Exists(tempZipPath) && new FileInfo(tempZipPath).Length > 0)
+                        if (process?.ExitCode == 0 && File.Exists(tempArchivePath) && new FileInfo(tempArchivePath).Length > 0)
                         {
-                            return tempZipPath;
+                            return tempArchivePath;
                         }
                     }
                 }
@@ -354,11 +354,12 @@ namespace UbuntuCloud.Services
                 }
             }
 
-            if (File.Exists(tempZipPath))
+            if (File.Exists(tempArchivePath))
             {
-                try { File.Delete(tempZipPath); } catch { }
+                try { File.Delete(tempArchivePath); } catch { }
             }
 
+            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
             ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
 
             return tempZipPath;
