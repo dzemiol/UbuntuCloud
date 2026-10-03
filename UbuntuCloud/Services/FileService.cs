@@ -312,7 +312,7 @@ namespace UbuntuCloud.Services
             return GetValidFullPath(subPath, fileName);
         }
 
-        public string CreateFolderZipStream(string subPath, string folderName)
+        public string CreateFolderZipStream(string subPath, string folderName, CancellationToken cancellationToken = default)
         {
             string targetDirPath = GetValidFullPath(subPath, folderName);
 
@@ -324,7 +324,7 @@ namespace UbuntuCloud.Services
             string tempDir = Path.Combine(_baseStoragePath, ".temp");
             Directory.CreateDirectory(tempDir);
 
-            string tempArchivePath = Path.Combine(tempDir, $"{Guid.NewGuid()}.tar.gz");
+            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable())
             {
@@ -333,7 +333,7 @@ namespace UbuntuCloud.Services
                     var processInfo = new ProcessStartInfo
                     {
                         FileName = "bash",
-                        Arguments = $"-c \"tar -cf - -C \\\"{targetDirPath}\\\" . | pigz -p {Environment.ProcessorCount} -1 > \\\"{tempArchivePath}\\\"\"",
+                        Arguments = $"-c \"cd \\\"{targetDirPath}\\\" && zip -q -r -1 - . | pigz -p {Environment.ProcessorCount} > \\\"{tempZipPath}\\\"\"",
                         RedirectStandardOutput = false,
                         RedirectStandardError = true,
                         UseShellExecute = false,
@@ -342,10 +342,17 @@ namespace UbuntuCloud.Services
 
                     using (var process = Process.Start(processInfo))
                     {
-                        process?.WaitForExit();
-                        if (process?.ExitCode == 0 && File.Exists(tempArchivePath) && new FileInfo(tempArchivePath).Length > 0)
+                        if (process != null)
                         {
-                            return tempArchivePath;
+                            using (cancellationToken.Register(() => { try { process.Kill(true); } catch { } }))
+                            {
+                                process.WaitForExit();
+
+                                if (!cancellationToken.IsCancellationRequested && process.ExitCode == 0 && File.Exists(tempZipPath) && new FileInfo(tempZipPath).Length > 0)
+                                {
+                                    return tempZipPath;
+                                }
+                            }
                         }
                     }
                 }
@@ -354,12 +361,13 @@ namespace UbuntuCloud.Services
                 }
             }
 
-            if (File.Exists(tempArchivePath))
+            if (File.Exists(tempZipPath))
             {
-                try { File.Delete(tempArchivePath); } catch { }
+                try { File.Delete(tempZipPath); } catch { }
             }
 
-            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
+            cancellationToken.ThrowIfCancellationRequested();
+
             ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
 
             return tempZipPath;
