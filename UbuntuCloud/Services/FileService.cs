@@ -320,18 +320,19 @@ namespace UbuntuCloud.Services
                 throw new DirectoryNotFoundException($"Katalog '{folderName}' nie istnieje.");
             }
 
-            string outputZipPath = GetValidFullPath(subPath, $"{folderName}.zip");
+            bool usePigz = RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable();
+            string extension = usePigz ? ".tar.gz" : ".zip";
+            string outputPath = GetValidFullPath(subPath, $"{folderName}{extension}");
 
-            if (File.Exists(outputZipPath) && new FileInfo(outputZipPath).Length > 0)
+            if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
             {
-                return outputZipPath;
+                return outputPath;
             }
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable())
+            if (usePigz)
             {
                 int cpuCores = Environment.ProcessorCount;
-
-                string command = $"tar -cf - -C \"{targetDirPath}\" . | pigz -K -p {cpuCores} > \"{outputZipPath}\"";
+                string command = $"tar -cf - -C \"{targetDirPath}\" . | pigz -K -p {cpuCores} > \"{outputPath}\"";
 
                 var processInfo = new ProcessStartInfo
                 {
@@ -343,7 +344,7 @@ namespace UbuntuCloud.Services
                     CreateNoWindow = true
                 };
 
-                Process process = null;
+                Process? process = null;
 
                 try
                 {
@@ -353,20 +354,20 @@ namespace UbuntuCloud.Services
                     {
                         using (cancellationToken.Register(() =>
                         {
-                            StopAllZipProcessesAndCleanup(outputZipPath);
+                            CleanupProcess(process, outputPath);
                         }))
                         {
                             process.WaitForExit();
 
                             if (cancellationToken.IsCancellationRequested)
                             {
-                                StopAllZipProcessesAndCleanup(outputZipPath);
+                                CleanupProcess(process, outputPath);
                                 cancellationToken.ThrowIfCancellationRequested();
                             }
 
-                            if (process.ExitCode == 0 && File.Exists(outputZipPath) && new FileInfo(outputZipPath).Length > 0)
+                            if (process.ExitCode == 0 && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
                             {
-                                return outputZipPath;
+                                return outputPath;
                             }
                         }
                     }
@@ -377,9 +378,11 @@ namespace UbuntuCloud.Services
                 }
                 catch
                 {
-                    StopAllZipProcessesAndCleanup(outputZipPath);
+                    CleanupProcess(process, outputPath);
                 }
             }
+
+            string outputZipPath = GetValidFullPath(subPath, $"{folderName}.zip");
 
             if (File.Exists(outputZipPath))
             {
@@ -393,45 +396,20 @@ namespace UbuntuCloud.Services
             return outputZipPath;
         }
 
-        private void StopAllZipProcessesAndCleanup(string filePath)
+        private void CleanupProcess(Process? process, string filePath)
         {
             try
             {
-                var killInfo = new ProcessStartInfo
+                if (process != null && !process.HasExited)
                 {
-                    FileName = "bash",
-                    Arguments = "-c \"killall -9 pigz tar zip 2>/dev/null || true\"",
-                    RedirectStandardOutput = false,
-                    RedirectStandardError = false,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-
-                using var killProcess = Process.Start(killInfo);
-                killProcess?.WaitForExit(1000);
+                    process.Kill(entireProcessTree: true);
+                }
             }
             catch { }
 
-            Thread.Sleep(100);
-
             if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
             {
-                try
-                {
-                    File.Delete(filePath);
-                }
-                catch
-                {
-                    try
-                    {
-                        Thread.Sleep(200);
-                        if (File.Exists(filePath))
-                        {
-                            File.Delete(filePath);
-                        }
-                    }
-                    catch { }
-                }
+                try { File.Delete(filePath); } catch { }
             }
         }
 

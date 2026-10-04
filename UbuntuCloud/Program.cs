@@ -65,7 +65,7 @@ app.MapGet("/download", async (string fileName, string? subPath, FileService fil
         {
             string archivePath = fileService.CreateFolderZipStream(subPath, fileName, cancellationToken);
 
-            bool isTarGz = archivePath.EndsWith(".tar.gz");
+            bool isTarGz = archivePath.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase);
             string contentType = isTarGz ? "application/gzip" : "application/zip";
             string downloadFileName = isTarGz ? $"{fileName}.tar.gz" : $"{fileName}.zip";
 
