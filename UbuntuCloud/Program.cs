@@ -25,7 +25,6 @@ builder.Services.Configure<FormOptions>(options =>
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
     serverOptions.Limits.MaxRequestBodySize = null;
-
     serverOptions.Limits.MinResponseDataRate = null;
 });
 
@@ -41,7 +40,7 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseAntiforgery();
 
-app.MapGet("/download", (string fileName, string? subPath, FileService fileService) =>
+app.MapGet("/download", async (string fileName, string? subPath, FileService fileService, CancellationToken cancellationToken) =>
 {
     subPath ??= "";
 
@@ -62,21 +61,28 @@ app.MapGet("/download", (string fileName, string? subPath, FileService fileServi
 
     if (Directory.Exists(fullPath))
     {
-        string tempArchivePath = fileService.CreateFolderZipStream(subPath, fileName);
+        try
+        {
+            string archivePath = fileService.CreateFolderZipStream(subPath, fileName, cancellationToken);
 
-        bool isTarGz = tempArchivePath.EndsWith(".tar.gz");
-        string contentType = isTarGz ? "application/gzip" : "application/zip";
-        string downloadFileName = isTarGz ? $"{fileName}.tar.gz" : $"{fileName}.zip";
+            bool isTarGz = archivePath.EndsWith(".tar.gz");
+            string contentType = isTarGz ? "application/gzip" : "application/zip";
+            string downloadFileName = isTarGz ? $"{fileName}.tar.gz" : $"{fileName}.zip";
 
-        var archiveStream = new FileStream(
-            tempArchivePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 1048576,
-            FileOptions.DeleteOnClose | FileOptions.Asynchronous);
+            var archiveStream = new FileStream(
+                archivePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1048576,
+                FileOptions.Asynchronous);
 
-        return Results.File(archiveStream, contentType, downloadFileName, enableRangeProcessing: true);
+            return Results.File(archiveStream, contentType, downloadFileName, enableRangeProcessing: true);
+        }
+        catch (OperationCanceledException)
+        {
+            return Results.StatusCode(499);
+        }
     }
 
     return Results.NotFound("Plik lub folder nie istnieje.");

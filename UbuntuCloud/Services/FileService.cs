@@ -85,7 +85,6 @@ namespace UbuntuCloud.Services
             }
             catch
             {
-                // Fallback dla specyficznych podmontowanych zasobów Linuksa
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
                     if (statvfs(_baseStoragePath, out var stat) == 0)
@@ -321,56 +320,119 @@ namespace UbuntuCloud.Services
                 throw new DirectoryNotFoundException($"Katalog '{folderName}' nie istnieje.");
             }
 
-            string tempDir = Path.Combine(_baseStoragePath, ".temp");
-            Directory.CreateDirectory(tempDir);
+            string outputZipPath = GetValidFullPath(subPath, $"{folderName}.zip");
 
-            string tempZipPath = Path.Combine(tempDir, $"{Guid.NewGuid()}.zip");
+            if (File.Exists(outputZipPath) && new FileInfo(outputZipPath).Length > 0)
+            {
+                return outputZipPath;
+            }
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && IsPigzAvailable())
             {
+                int cpuCores = Environment.ProcessorCount;
+
+                string command = $"tar -cf - -C \"{targetDirPath}\" . | pigz -K -p {cpuCores} > \"{outputZipPath}\"";
+
+                var processInfo = new ProcessStartInfo
+                {
+                    FileName = "bash",
+                    Arguments = $"-c \"{command}\"",
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                Process process = null;
+
                 try
                 {
-                    var processInfo = new ProcessStartInfo
-                    {
-                        FileName = "bash",
-                        Arguments = $"-c \"cd \\\"{targetDirPath}\\\" && zip -q -r -1 - . | pigz -p {Environment.ProcessorCount} > \\\"{tempZipPath}\\\"\"",
-                        RedirectStandardOutput = false,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
+                    process = Process.Start(processInfo);
 
-                    using (var process = Process.Start(processInfo))
+                    if (process != null)
                     {
-                        if (process != null)
+                        using (cancellationToken.Register(() =>
                         {
-                            using (cancellationToken.Register(() => { try { process.Kill(true); } catch { } }))
-                            {
-                                process.WaitForExit();
+                            StopAllZipProcessesAndCleanup(outputZipPath);
+                        }))
+                        {
+                            process.WaitForExit();
 
-                                if (!cancellationToken.IsCancellationRequested && process.ExitCode == 0 && File.Exists(tempZipPath) && new FileInfo(tempZipPath).Length > 0)
-                                {
-                                    return tempZipPath;
-                                }
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                StopAllZipProcessesAndCleanup(outputZipPath);
+                                cancellationToken.ThrowIfCancellationRequested();
+                            }
+
+                            if (process.ExitCode == 0 && File.Exists(outputZipPath) && new FileInfo(outputZipPath).Length > 0)
+                            {
+                                return outputZipPath;
                             }
                         }
                     }
                 }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch
                 {
+                    StopAllZipProcessesAndCleanup(outputZipPath);
                 }
             }
 
-            if (File.Exists(tempZipPath))
+            if (File.Exists(outputZipPath))
             {
-                try { File.Delete(tempZipPath); } catch { }
+                try { File.Delete(outputZipPath); } catch { }
             }
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            ZipFile.CreateFromDirectory(targetDirPath, tempZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
+            ZipFile.CreateFromDirectory(targetDirPath, outputZipPath, CompressionLevel.Fastest, includeBaseDirectory: true);
 
-            return tempZipPath;
+            return outputZipPath;
+        }
+
+        private void StopAllZipProcessesAndCleanup(string filePath)
+        {
+            try
+            {
+                var killInfo = new ProcessStartInfo
+                {
+                    FileName = "bash",
+                    Arguments = "-c \"killall -9 pigz tar zip 2>/dev/null || true\"",
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using var killProcess = Process.Start(killInfo);
+                killProcess?.WaitForExit(1000);
+            }
+            catch { }
+
+            Thread.Sleep(100);
+
+            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            {
+                try
+                {
+                    File.Delete(filePath);
+                }
+                catch
+                {
+                    try
+                    {
+                        Thread.Sleep(200);
+                        if (File.Exists(filePath))
+                        {
+                            File.Delete(filePath);
+                        }
+                    }
+                    catch { }
+                }
+            }
         }
 
         private bool IsPigzAvailable()
